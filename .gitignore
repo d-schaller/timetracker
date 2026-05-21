@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller build artefacts
+build/
+dist/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Runtime data files (stored outside the repo via config)
+timetracker_data.json
+timetracker_data.json.bak
