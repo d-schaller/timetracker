@@ -23,6 +23,22 @@ def resource_path(relative):
         base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, relative)
 
+def _enable_high_dpi():
+    """Opt in to system-DPI awareness on Windows so text renders sharply
+    instead of being bitmap-scaled on high-DPI displays."""
+    if sys.platform != 'win32':
+        return
+    try:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)   # system DPI aware
+        except (AttributeError, OSError):
+            ctypes.windll.user32.SetProcessDPIAware()        # pre-Win8.1 fallback
+    except Exception:
+        pass
+
+_enable_high_dpi()
+
 CONFIG_FILE = Path.home() / ".timetracker_config.json"
 
 # Idle threshold (seconds) — after this much inactivity, prompt user on return
@@ -258,6 +274,11 @@ def running_entry(data):
             return e
     return None
 
+def active_categories(data):
+    """Categories not archived. Archived ones keep their entries and still
+    appear in reports/history, but are hidden from the start list."""
+    return [c for c in data['categories'] if not c.get('archived')]
+
 def _bind_tree(widget, event, handler):
     """Bind an event on a widget and all its descendants."""
     widget.bind(event, handler)
@@ -283,7 +304,7 @@ def fmt_h(sec):
 
 def fmt_hm(sec):
     """Short duration: 1:30 h or 45 min."""
-    h, r = divmod(int(sec), 3600)
+    h, r = divmod(int(round(sec)), 3600)
     m    = r // 60
     if h == 0:
         return f"{m} min"
@@ -867,7 +888,10 @@ class ManageCategoriesDialog(tk.Toplevel):
         hdr.pack(fill='x')
         tk.Label(hdr, text="Kategorien", bg=BG_PANEL, fg=FG,
                  font=('Segoe UI', 11, 'bold')).pack(side='left')
-        tk.Label(hdr, text=f"{len(self.data['categories'])} gespeichert",
+        n_arch = sum(1 for c in self.data['categories'] if c.get('archived'))
+        count_txt = (f"{len(self.data['categories']) - n_arch} aktiv · {n_arch} archiviert"
+                     if n_arch else f"{len(self.data['categories'])} gespeichert")
+        tk.Label(hdr, text=count_txt,
                  bg=BG_PANEL, fg=FG_DIM, font=('Segoe UI', 9)).pack(side='right')
 
         tk.Frame(self, bg=BG_SEP, height=1).pack(fill='x')
@@ -927,6 +951,7 @@ class ManageCategoriesDialog(tk.Toplevel):
             sb.pack_forget()
 
     def _cat_row(self, parent, cat):
+        archived = bool(cat.get('archived'))
         row = tk.Frame(parent, bg=BG_ROW)
         row.pack(fill='x', pady=2)
 
@@ -937,12 +962,15 @@ class ManageCategoriesDialog(tk.Toplevel):
         mid = tk.Frame(row, bg=BG_ROW, padx=10)
         mid.pack(side='left', fill='both', expand=True)
 
-        tk.Label(mid, text=cat['name'], bg=BG_ROW, fg=FG,
+        tk.Label(mid, text=cat['name'], bg=BG_ROW, fg=FG_DIM if archived else FG,
                  font=('Segoe UI', 10, 'bold'), anchor='w').pack(side='left', pady=7)
         task = cat.get('task_number') or ''
         if task:
             tk.Label(mid, text=f'· {task}', bg=BG_ROW, fg=FG_DIM,
                      font=('Segoe UI', 9), anchor='w').pack(side='left', padx=(6, 0), pady=7)
+        if archived:
+            tk.Label(mid, text='(archiviert)', bg=BG_ROW, fg=FG_DIM,
+                     font=('Segoe UI', 8, 'italic'), anchor='w').pack(side='left', padx=(6, 0), pady=7)
 
         # Action buttons
         cats = self.data['categories']
@@ -957,14 +985,32 @@ class ManageCategoriesDialog(tk.Toplevel):
                       state='disabled' if at_edge else 'normal',
                       command=lambda c=cat, d=delta: self._move(c, d),
                       ).pack(side='left', padx=1, pady=6)
+        tk.Button(btns, text="Reaktiv." if archived else "Archiv.",
+                  bg='#3d5166', fg=FG, relief='flat',
+                  font=('Segoe UI', 8), padx=8, pady=3, cursor='hand2',
+                  activebackground='#3d5166',
+                  command=lambda c=cat: self._toggle_archive(c)).pack(side='left', padx=(4, 2), pady=6)
         tk.Button(btns, text="Bearb.", bg=ACCENT, fg=FG, relief='flat',
                   font=('Segoe UI', 8), padx=8, pady=3, cursor='hand2',
                   activebackground=ACCENT,
-                  command=lambda c=cat: self._edit(c)).pack(side='left', padx=(4, 2), pady=6)
+                  command=lambda c=cat: self._edit(c)).pack(side='left', padx=2, pady=6)
         tk.Button(btns, text="Loeschen", bg=RED, fg=FG, relief='flat',
                   font=('Segoe UI', 8), padx=8, pady=3, cursor='hand2',
                   activebackground=RED,
                   command=lambda c=cat: self._delete(c)).pack(side='left', padx=2, pady=6)
+
+    def _toggle_archive(self, cat):
+        if cat.get('archived'):
+            cat.pop('archived', None)
+        else:
+            # Archiving the category of the running entry stops it (like delete)
+            run = running_entry(self.data)
+            if run and run['category_id'] == cat['id']:
+                run['end'] = datetime.now().isoformat(timespec='seconds')
+            cat['archived'] = True
+        save_data(self.data)
+        self.on_change()
+        self._build()
 
     def _add(self):
         dlg = CategoryDialog(self)
@@ -1016,10 +1062,10 @@ class EditEntryDialog(tk.Toplevel):
     """Edit start/end/description of a single time entry."""
     FMT = '%d.%m.%Y %H:%M:%S'
 
-    def __init__(self, parent, entry, data):
+    def __init__(self, parent, entry, data, title="Eintrag bearbeiten"):
         super().__init__(parent)
         self.configure(bg=BG_PANEL)
-        self.title("Eintrag bearbeiten")
+        self.title(title)
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
@@ -1205,6 +1251,8 @@ class ManageEntriesDialog(tk.Toplevel):
         tk.Button(ft, text="Schliessen", relief='flat',
                   font=('Segoe UI', 9), padx=14, pady=6, cursor='hand2',
                   command=self.destroy, **BTN_NEUTRAL).pack(side='right')
+        flatbtn(ft, "+ Nachtragen", '#27ae60', self._add,
+                pady=6).pack(side='right', padx=(0, 6))
 
         self._refresh()
         self.bind('<Escape>', lambda _: self.destroy())
@@ -1306,6 +1354,29 @@ class ManageEntriesDialog(tk.Toplevel):
                   font=('Segoe UI', 8), padx=6, pady=3, cursor='hand2',
                   activebackground=RED,
                   command=lambda ent=e: self._delete(ent)).pack(side='left', padx=2)
+
+    def _add(self):
+        """Manually add a past entry ("nachtragen")."""
+        if not self.data['categories']:
+            messagebox.showwarning("Fehler", "Bitte zuerst eine Kategorie anlegen.",
+                                   parent=self)
+            return
+        now  = datetime.now().replace(microsecond=0)
+        cats = active_categories(self.data) or self.data['categories']
+        template = {
+            'id':          str(uuid.uuid4()),
+            'category_id': cats[0]['id'],
+            'start':       (now - timedelta(hours=1)).isoformat(timespec='seconds'),
+            'end':         now.isoformat(timespec='seconds'),
+            'description': '',
+        }
+        dlg = EditEntryDialog(self, template, self.data, title="Eintrag nachtragen")
+        if dlg.result:
+            template.update(dlg.result)
+            self.data['entries'].append(template)
+            save_data(self.data)
+            self.on_change()
+            self._refresh()
 
     def _edit(self, entry):
         dlg = EditEntryDialog(self, entry, self.data)
@@ -1692,6 +1763,24 @@ class App(tk.Tk):
         self._grid_view = cfg.get('grid_view', False)
         self._full_w = cfg.get('win_w', 420)
         self._full_h = cfg.get('win_h', 500)
+
+        def cfg_num(key, default):
+            try:
+                return float(cfg.get(key, default))
+            except (TypeError, ValueError):
+                return float(default)
+
+        # Daily target (hours); 0 disables the progress display
+        self._daily_target_sec = round(max(0.0, cfg_num('daily_target_hours', 8.2)) * 3600)
+        self._progress_frac    = 0.0
+
+        # "Tracking vergessen?" reminder — minutes without a running timer
+        # before a hint appears (0 disables), limited to these workday hours
+        self._remind_min      = cfg_num('remind_no_tracking_min', 30)
+        self._remind_from_h   = int(cfg_num('remind_from_hour', 8))
+        self._remind_to_h     = int(cfg_num('remind_to_hour', 17))
+        self._remind_open     = False
+        self._untracked_since = datetime.now()
         if 'win_x' in cfg and 'win_y' in cfg:
             self.geometry(f"{self._full_w}x{self._full_h}+{cfg['win_x']}+{cfg['win_y']}")
         else:
@@ -1817,6 +1906,13 @@ class App(tk.Tk):
                                   bg=BG, fg=FG_DIM, anchor='e')
         self.total_lbl.pack(anchor='e')
 
+        # Slim progress bar towards the daily target
+        self._progress_bar = tk.Canvas(self, height=4, bg=BG_ROW,
+                                       highlightthickness=0, bd=0)
+        if self._daily_target_sec > 0:
+            self._progress_bar.pack(fill='x')
+        self._progress_bar.bind('<Configure>', lambda _e: self._update_progress_bar())
+
         self._sep1 = tk.Frame(self, bg=BG_SEP, height=1)
         self._sep1.pack(fill='x')
 
@@ -1867,6 +1963,29 @@ class App(tk.Tk):
         self._storage_btn.pack(side='right', padx=3)
 
     # ------------------------------------------------------------------
+    def _update_today_display(self, tots):
+        """Header 'Heute' label and progress bar, incl. daily target if set."""
+        done = sum(tots.values())
+        if self._daily_target_sec > 0:
+            self._progress_frac = done / self._daily_target_sec
+            reached = done >= self._daily_target_sec
+            self.total_lbl.config(
+                text=(f"Heute: {fmt_hms(done)} / {fmt_hm(self._daily_target_sec)}"
+                      f"  ({min(self._progress_frac, 9.99) * 100:.0f}%)"),
+                fg=GREEN if reached else FG_DIM)
+            self._update_progress_bar()
+        else:
+            self.total_lbl.config(text=f"Heute: {fmt_hms(done)}", fg=FG_DIM)
+
+    def _update_progress_bar(self):
+        c = self._progress_bar
+        c.delete('all')
+        w    = c.winfo_width()
+        frac = self._progress_frac
+        if w > 1 and frac > 0:
+            c.create_rectangle(0, 0, int(w * min(1.0, frac)), 6,
+                               fill=GREEN if frac >= 1 else ACCENT, width=0)
+
     def _refresh(self):
         for w in self.cat_outer.winfo_children():
             w.destroy()
@@ -1878,28 +1997,31 @@ class App(tk.Tk):
         act  = run['category_id'] if run else None
         tots = self._today_totals()
 
-        self.total_lbl.config(text=f"Heute: {fmt_hms(sum(tots.values()))}")
+        self._update_today_display(tots)
         self._stop_btn.config(
             state='normal' if run else 'disabled',
             fg=FG if run else '#6b3535',
         )
 
-        if not self.data['categories']:
-            tk.Label(self.cat_outer,
-                     text="Noch keine Kategorien.\nKlicke auf 'Kategorien'.",
+        cats = active_categories(self.data)
+        if not cats:
+            text = ("Noch keine Kategorien.\nKlicke auf 'Kategorien'."
+                    if not self.data['categories']
+                    else "Alle Kategorien sind archiviert.\nKlicke auf 'Kategorien'.")
+            tk.Label(self.cat_outer, text=text,
                      bg=BG_PANEL, fg=FG_DIM, font=('Segoe UI', 10),
                      justify='center', pady=22).pack()
             return
 
         if self._grid_view:
-            self._render_grid(act, tots)
+            self._render_grid(act, tots, cats)
         else:
-            self._render_list(act, tots)
+            self._render_list(act, tots, cats)
 
         self.update_idletasks()
 
-    def _render_list(self, act, tots):
-        for cat in self.data['categories']:
+    def _render_list(self, act, tots, cats):
+        for cat in cats:
             is_active = cat['id'] == act
             bg = BG_ACT if is_active else BG_ROW
 
@@ -1939,12 +2061,12 @@ class App(tk.Tk):
             for w in (row, mid, right):
                 w.bind('<Button-1>', lambda _, cid=cat['id']: self._start(cid))
 
-    def _render_grid(self, act, tots):
+    def _render_grid(self, act, tots, cats):
         outer = self.cat_outer
         outer.columnconfigure(0, weight=1)
         outer.columnconfigure(1, weight=1)
 
-        for i, cat in enumerate(self.data['categories']):
+        for i, cat in enumerate(cats):
             is_active = cat['id'] == act
             bg = BG_ACT if is_active else BG_ROW
             grid_row, col = divmod(i, 2)
@@ -2024,16 +2146,51 @@ class App(tk.Tk):
         # Recalculate per-category totals only while a timer is running or just stopped
         if run or self._last_was_running:
             tots = self._today_totals()
-            self.total_lbl.config(text=f"Heute: {fmt_hms(sum(tots.values()))}")
+            self._update_today_display(tots)
             for cid, lbl in self._cat_time_labels.items():
                 try:
                     lbl.config(text=fmt_hms(tots.get(cid, 0)))
                 except tk.TclError:
                     pass
 
+        # Track how long no timer has been running (for the reminder)
+        if run:
+            self._untracked_since = None
+        elif self._untracked_since is None:
+            self._untracked_since = datetime.now()
+        self._maybe_remind_tracking(run)
+
         self._last_was_running = bool(run)
         self._check_idle(run)
         self._after = self.after(1000, self._tick)
+
+    def _maybe_remind_tracking(self, run):
+        """Hint when no timer has been running for a while during work hours."""
+        if run or self._remind_open or self._remind_min <= 0:
+            return
+        if self._untracked_since is None:
+            return
+        now = datetime.now()
+        if now.weekday() >= 5:                                   # weekend
+            return
+        if not (self._remind_from_h <= now.hour < self._remind_to_h):
+            return
+        if get_idle_seconds() > 120:
+            return  # user not at the PC — ask once they're back
+        gap = (now - self._untracked_since).total_seconds()
+        if gap < self._remind_min * 60:
+            return
+        self._remind_open = True
+        try:
+            messagebox.showinfo(
+                "Zeiterfassung vergessen?",
+                f"Seit {fmt_hm(gap)} laeuft keine Zeiterfassung.\n\n"
+                "Falls du gearbeitet hast: ueber 'Eintraege' > '+ Nachtragen' "
+                "laesst sich die Zeit nachtraeglich erfassen.",
+                parent=self)
+        finally:
+            self._remind_open = False
+            self._untracked_since = datetime.now()   # snooze for another interval
 
     def _check_idle(self, run):
         if self._idle_prompt_open:
@@ -2271,7 +2428,8 @@ class App(tk.Tk):
         self._mini = not self._mini
         x, y = self.winfo_x(), self.winfo_y()
         if self._mini:
-            for w in (self._hdr, self._sep1, self._cat_container, self._sep2, self._bot):
+            for w in (self._hdr, self._progress_bar, self._sep1,
+                      self._cat_container, self._sep2, self._bot):
                 w.pack_forget()
             self._build_mini_bar()
             self.resizable(True, False)
@@ -2285,6 +2443,8 @@ class App(tk.Tk):
             if hasattr(self, '_mini_frame'):
                 self._mini_frame.destroy()
             self._hdr.pack(fill='x')
+            if self._daily_target_sec > 0:
+                self._progress_bar.pack(fill='x')
             self._sep1.pack(fill='x')
             self._cat_container.pack(fill='both', expand=True)
             self._sep2.pack(fill='x')
@@ -2384,8 +2544,9 @@ class App(tk.Tk):
         run  = running_entry(self.data)
         act  = run['category_id'] if run else None
         tots = self._today_totals()
+        fly_cats = active_categories(self.data)
 
-        if not self.data['categories']:
+        if not fly_cats:
             tk.Label(fw, text="Keine Kategorien", bg=BG, fg=FG_DIM,
                      font=('Segoe UI', 9), padx=14, pady=10).pack()
         else:
@@ -2398,7 +2559,7 @@ class App(tk.Tk):
             cat_inner = tk.Frame(cat_canvas, bg=BG)
             cat_win   = cat_canvas.create_window((0, 0), window=cat_inner, anchor='nw')
 
-            for cat in self.data['categories']:
+            for cat in fly_cats:
                 is_active = cat['id'] == act
                 bg        = BG_ACT if is_active else BG_ROW
                 bg_hover  = '#243a4e' if is_active else '#3a4a5c'

@@ -9,6 +9,10 @@ No external dependencies — only Python 3 and its built-in `tkinter` library ar
 
 - **Start / stop timers** per category with a single click
 - **Category management** — custom colours, optional ServiceNow task numbers, drag-free reorder
+- **Category archiving** — hide finished projects from the start list without losing their history
+- **Manual entries** — forgot the timer? Add a past entry via **Eintraege → + Nachtragen**
+- **Daily target** — progress display in the header (default 8.2 h, configurable)
+- **Tracking reminder** — a hint appears if no timer is running for a while during work hours
 - **List and grid view** — toggle between a compact list and a 2-column card grid
 - **Mini-bar mode** — collapses to a slim always-on-top strip so it stays out of the way
 - **Always-on-top pin** — keep the window above all other applications
@@ -100,8 +104,31 @@ single-file executable that requires no Python installation on the target machin
 
 - **+ Neue Kategorie** — add a category. Pick a name, an optional ServiceNow task number, and a colour swatch.
 - **↑ / ↓** — reorder categories; the order is reflected in the main window.
+- **Archiv. / Reaktiv.** — archive a category to hide it from the start list (its entries stay in reports); reactivate it any time. Archiving the currently running category stops the timer.
 - **Bearb.** — edit an existing category.
 - **Loeschen** — delete a category. Time entries are preserved even after deletion.
+
+### Entry manager
+
+- Browse entries by range (today / week / month / all) with free-text search.
+- **+ Nachtragen** — manually add a past entry (defaults to the last hour).
+- **Bearb. / Loeschen** — edit or delete individual entries.
+
+### Daily target & reminder
+
+The header shows today's total against a daily target (default **8.2 h**) with a slim progress
+bar that turns green when the target is reached. If no timer is running for **30 minutes**
+during work hours (Mon–Fri, 08:00–17:00), a reminder dialog appears.
+Both can be tuned (or disabled with `0`) in `.timetracker_config.json`:
+
+```json
+{
+  "daily_target_hours": 8.2,
+  "remind_no_tracking_min": 30,
+  "remind_from_hour": 8,
+  "remind_to_hour": 17
+}
+```
 
 ### Work descriptions
 
@@ -136,7 +163,7 @@ Click **Report**, choose a date range, and an HTML file is opened in your browse
 | `timetracker_data.json.bak` | Same folder | Automatic backup of the previous save |
 | `timetracker_data.json.corrupt-…` | Same folder | An unreadable data file is moved aside (never deleted) before the app falls back to the backup |
 | `timetracker_data.json.conflict-…` | Same folder | If the data file was changed externally (e.g. OneDrive sync from another machine), the external version is preserved here before saving |
-| `.timetracker_config.json` | `~` (home directory) | App preferences: data path, window size/position, pin/mini/grid state |
+| `.timetracker_config.json` | `~` (home directory) | App preferences: data path, window size/position, pin/mini/grid state, daily target, reminder settings |
 
 ---
 
