@@ -1,6 +1,6 @@
 # Time Tracker
 
-A lightweight desktop time-tracking application built for **ServiceNow** reporting at BitHawk AG.  
+A lightweight desktop time-tracking application for task-based time reporting.  
 No external dependencies — only Python 3 and its built-in `tkinter` library are required.
 
 ---
@@ -8,7 +8,7 @@ No external dependencies — only Python 3 and its built-in `tkinter` library ar
 ## Features
 
 - **Start / stop timers** per category with a single click
-- **Category management** — custom colours, optional ServiceNow task numbers, drag-free reorder
+- **Category management** — custom colours, optional task/ticket numbers, drag-free reorder
 - **Category archiving** — hide finished projects from the start list without losing their history
 - **Manual entries** — forgot the timer? Add a past entry via **Eintraege → + Nachtragen**
 - **Daily target** — progress display in the header (default 8.2 h, configurable)
@@ -102,7 +102,7 @@ single-file executable that requires no Python installation on the target machin
 
 ### Category manager
 
-- **+ Neue Kategorie** — add a category. Pick a name, an optional ServiceNow task number, and a colour swatch.
+- **+ Neue Kategorie** — add a category. Pick a name, an optional task/ticket number, and a colour swatch.
 - **↑ / ↓** — reorder categories; the order is reflected in the main window.
 - **🗃 / ♻** — archive a category to hide it from the start list (its entries stay in reports); reactivate it any time. Archiving the currently running category stops the timer.
 - Archived categories are hidden in the manager too — **Archivierte anzeigen (n)** in the footer toggles them.
