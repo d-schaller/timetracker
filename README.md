@@ -134,6 +134,8 @@ Click **Report**, choose a date range, and an HTML file is opened in your browse
 |---|---|---|
 | `timetracker_data.json` | Folder chosen on first run | All categories and time entries |
 | `timetracker_data.json.bak` | Same folder | Automatic backup of the previous save |
+| `timetracker_data.json.corrupt-…` | Same folder | An unreadable data file is moved aside (never deleted) before the app falls back to the backup |
+| `timetracker_data.json.conflict-…` | Same folder | If the data file was changed externally (e.g. OneDrive sync from another machine), the external version is preserved here before saving |
 | `.timetracker_config.json` | `~` (home directory) | App preferences: data path, window size/position, pin/mini/grid state |
 
 ---

@@ -7,6 +7,8 @@ Kein pip install noetig (nur Python 3)
 import tkinter as tk
 from tkinter import messagebox, filedialog
 import json, uuid, webbrowser, tempfile, os, shutil, socket, csv, sys
+import html as html_mod
+import subprocess
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
@@ -119,13 +121,38 @@ def flatbtn(parent, text, bg, cmd, *, fg=FG, padx=12, pady=6):
 # Data helpers
 # ---------------------------------------------------------------------------
 
+# mtime of DATA_FILE at last load/save — used to detect external changes
+# (e.g. OneDrive sync from another machine) before overwriting.
+_DATA_MTIME = None
+
+def _stat_data_mtime():
+    try:
+        return DATA_FILE.stat().st_mtime_ns
+    except OSError:
+        return None
+
 def load_data():
-    """Load data, falling back to .bak on JSON decode error."""
+    """Load data, falling back to .bak on JSON decode error.
+
+    A corrupt main file is renamed aside (quarantined) instead of being left
+    in place — otherwise the next save would copy the corrupt file over a
+    possibly good .bak.
+    """
+    global _DATA_MTIME
+    d = None
     if DATA_FILE.exists():
+        corrupt = None
         try:
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
                 d = json.load(f)
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as ex:
+            if isinstance(ex, json.JSONDecodeError):
+                ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+                corrupt = DATA_FILE.with_name(DATA_FILE.name + f'.corrupt-{ts}')
+                try:
+                    os.replace(DATA_FILE, corrupt)
+                except OSError:
+                    corrupt = None
             bak = DATA_FILE.with_suffix(DATA_FILE.suffix + '.bak')
             if bak.exists():
                 try:
@@ -136,24 +163,49 @@ def load_data():
                         f"Hauptdatei beschaedigt - aus Backup wiederhergestellt:\n{bak}",
                     )
                 except (json.JSONDecodeError, OSError):
-                    d = {}
-            else:
-                d = {}
-    else:
+                    d = None
+            if d is None:
+                msg = ("Datendatei nicht lesbar und kein brauchbares Backup gefunden - "
+                       "starte mit leeren Daten.")
+                if corrupt is not None:
+                    msg += f"\n\nDie beschaedigte Datei wurde gesichert als:\n{corrupt}"
+                messagebox.showwarning("Time Tracker", msg)
+    if d is None:
         d = {}
     d.setdefault('categories', [])
     d.setdefault('entries', [])
+    _DATA_MTIME = _stat_data_mtime()
     return d
 
 def save_data(data):
     """Atomically write data file, keeping a rolling .bak of the previous version."""
+    global _DATA_MTIME
     payload = json.dumps(data, indent=2, ensure_ascii=False)
+    cur_mtime = _stat_data_mtime()
+    if _DATA_MTIME is not None and cur_mtime is not None and cur_mtime != _DATA_MTIME:
+        # File changed on disk behind our back (e.g. OneDrive sync from another
+        # machine). Preserve the external version before overwriting it.
+        ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+        conflict = DATA_FILE.with_name(DATA_FILE.name + f'.conflict-{ts}')
+        try:
+            shutil.copy2(DATA_FILE, conflict)
+            messagebox.showwarning(
+                "Time Tracker",
+                "Die Datendatei wurde ausserhalb dieser Instanz geaendert "
+                "(z.B. OneDrive-Sync von einem anderen Geraet).\n\n"
+                "Die externe Version wurde gesichert als:\n"
+                f"{conflict}\n\n"
+                "Die Daten dieser Instanz werden jetzt gespeichert.",
+            )
+        except OSError:
+            pass
     if DATA_FILE.exists():
         try:
             shutil.copy2(DATA_FILE, DATA_FILE.with_suffix(DATA_FILE.suffix + '.bak'))
         except OSError:
             pass  # backup is best-effort
     _atomic_write_text(DATA_FILE, payload)
+    _DATA_MTIME = _stat_data_mtime()
 
 # ---------------------------------------------------------------------------
 # Single-instance lock (binds a localhost TCP port keyed by data file path)
@@ -206,19 +258,6 @@ def running_entry(data):
             return e
     return None
 
-def today_totals(data):
-    today_str = date.today().isoformat()  # "2026-04-22"
-    now       = datetime.now()
-    totals    = {}
-    for e in data['entries']:
-        if not e['start'].startswith(today_str):
-            continue
-        s   = datetime.fromisoformat(e['start'])
-        end = datetime.fromisoformat(e['end']) if e.get('end') else now
-        cid = e['category_id']
-        totals[cid] = totals.get(cid, 0) + (end - s).total_seconds()
-    return totals
-
 def _bind_tree(widget, event, handler):
     """Bind an event on a widget and all its descendants."""
     widget.bind(event, handler)
@@ -255,16 +294,21 @@ def fmt_hm(sec):
 # ---------------------------------------------------------------------------
 
 def generate_report(data, from_date, to_date):
+    esc = html_mod.escape
     cat_map = {c['id']: c for c in data['categories']}
     now = datetime.now()
 
     by_day = {}
     for e in data['entries']:
-        s = datetime.fromisoformat(e['start'])
+        try:
+            s   = datetime.fromisoformat(e['start'])
+            end = datetime.fromisoformat(e['end']) if e.get('end') else now
+        except (ValueError, TypeError):
+            continue
+        # Entries are attributed entirely to their start day (no midnight split)
         d = s.date()
         if not (from_date <= d <= to_date):
             continue
-        end = datetime.fromisoformat(e['end']) if e.get('end') else now
         dur = (end - s).total_seconds()
         if dur < 1:
             continue
@@ -286,8 +330,8 @@ def generate_report(data, from_date, to_date):
         pct = sec / grand * 100 if grand else 0
         sum_rows += f"""
         <tr>
-          <td><span class="dot" style="background:{c['color']}"></span>{c['name']}</td>
-          <td class="mono">{c.get('task_number') or '–'}</td>
+          <td><span class="dot" style="background:{esc(c['color'])}"></span>{esc(c['name'])}</td>
+          <td class="mono">{esc(c.get('task_number') or '–')}</td>
           <td class="r">{fmt_h(sec)}</td>
           <td class="r">{pct:.1f}&thinsp;%</td>
         </tr>"""
@@ -305,8 +349,8 @@ def generate_report(data, from_date, to_date):
         c = cat_map.get(cid, {'name': '?', 'color': '#999'})
         cat_checkboxes += f"""
         <label class="cat-label">
-          <input type="checkbox" class="cat-cb" value="{cid}" checked>
-          <span class="dot" style="background:{c['color']}"></span>{c['name']}
+          <input type="checkbox" class="cat-cb" value="{esc(cid)}" checked>
+          <span class="dot" style="background:{esc(c['color'])}"></span>{esc(c['name'])}
         </label>"""
 
     day_buttons = '<button class="day-btn active" data-date="all">Alle</button>'
@@ -328,7 +372,6 @@ def generate_report(data, from_date, to_date):
         for s, end, cid, dur, desc in entries:
             cat  = cat_map.get(cid, {'name': '?', 'task_number': '–', 'color': '#999'})
             task = cat.get('task_number') or '–'
-            safe_desc = desc.replace('"', '&quot;')
 
             if prev_end is not None:
                 gap = (s - prev_end).total_seconds()
@@ -342,19 +385,19 @@ def generate_report(data, from_date, to_date):
               </tr>"""
 
             rows += f"""
-              <tr class="entry-row" data-cat="{cid}" data-dur="{int(dur)}" data-desc="{safe_desc.lower()}" data-date="{d.isoformat()}">
+              <tr class="entry-row" data-cat="{esc(cid)}" data-dur="{int(dur)}" data-desc="{esc(desc.lower())}" data-date="{d.isoformat()}">
                 <td class="time-range">{s.strftime('%H:%M')}&nbsp;–&nbsp;{end.strftime('%H:%M')}</td>
                 <td class="dur">{fmt_hm(dur)}</td>
                 <td class="cat-cell">
-                  <span class="dot" style="background:{cat['color']}"></span>{cat['name']}
+                  <span class="dot" style="background:{esc(cat['color'])}"></span>{esc(cat['name'])}
                 </td>
-                <td class="mono task-col">{task}<button class="copy-btn" data-copy="{task}" title="Kopieren">&#128203;</button></td>
+                <td class="mono task-col">{esc(task)}<button class="copy-btn" data-copy="{esc(task)}" title="Kopieren">&#128203;</button></td>
               </tr>"""
 
             if desc:
                 rows += f"""
               <tr class="desc-row">
-                <td colspan="4" class="desc-cell">&#8627;&nbsp;{desc}<button class="copy-btn" data-copy="{desc.replace(chr(34), '&quot;')}" title="Kopieren">&#128203;</button></td>
+                <td colspan="4" class="desc-cell">&#8627;&nbsp;{esc(desc)}<button class="copy-btn" data-copy="{esc(desc)}" title="Kopieren">&#128203;</button></td>
               </tr>"""
 
             prev_end = end
@@ -584,7 +627,7 @@ def generate_report(data, from_date, to_date):
 <p class="no-results" id="noResults">Keine Eintraege entsprechen dem Filter.</p>
 {journal_html if journal_html else '<p style="color:#718096;font-size:.9em">Keine Eintraege im gewaehlten Zeitraum.</p>'}
 
-<p class="footer">Generiert am {gen}&nbsp;&nbsp;|&nbsp;&nbsp;Quelldatei: {DATA_FILE}</p>
+<p class="footer">Generiert am {gen}&nbsp;&nbsp;|&nbsp;&nbsp;Quelldatei: {esc(str(DATA_FILE))}</p>
 
 <script>
 (function () {{
@@ -973,7 +1016,7 @@ class EditEntryDialog(tk.Toplevel):
     """Edit start/end/description of a single time entry."""
     FMT = '%d.%m.%Y %H:%M:%S'
 
-    def __init__(self, parent, entry, categories):
+    def __init__(self, parent, entry, data):
         super().__init__(parent)
         self.configure(bg=BG_PANEL)
         self.title("Eintrag bearbeiten")
@@ -982,7 +1025,9 @@ class EditEntryDialog(tk.Toplevel):
         self.grab_set()
         self.geometry(f"+{parent.winfo_rootx()+50}+{parent.winfo_rooty()+50}")
         self.entry      = entry
-        self.categories = categories
+        self.data       = data
+        self.categories = data['categories']
+        categories      = self.categories
         self.result     = None
 
         pad = tk.Frame(self, bg=BG_PANEL, padx=22, pady=18)
@@ -1055,6 +1100,17 @@ class EditEntryDialog(tk.Toplevel):
                 return
             if e_dt <= s_dt:
                 messagebox.showwarning("Fehler", "Ende muss nach Start liegen.", parent=self)
+                return
+        else:
+            # Open end requested — make sure no other entry is already running
+            other_open = next((x for x in self.data['entries']
+                               if x is not self.entry and not x.get('end')), None)
+            if other_open:
+                messagebox.showwarning(
+                    "Fehler",
+                    "Es laeuft bereits ein anderer Eintrag - "
+                    "es kann nur ein Eintrag offen sein.",
+                    parent=self)
                 return
         cat = next((c for c in self.categories if c['name'] == self.cat_var.get()), None)
         if not cat:
@@ -1201,7 +1257,10 @@ class ManageEntriesDialog(tk.Toplevel):
                      pady=20).pack()
         else:
             for s_dt, e, cat in rows:
-                end_dt = datetime.fromisoformat(e['end']) if e.get('end') else None
+                try:
+                    end_dt = datetime.fromisoformat(e['end']) if e.get('end') else None
+                except (ValueError, TypeError):
+                    end_dt = None
                 dur = ((end_dt or datetime.now()) - s_dt).total_seconds()
                 total_sec += dur
                 self._row(e, cat, s_dt, end_dt, dur)
@@ -1249,7 +1308,7 @@ class ManageEntriesDialog(tk.Toplevel):
                   command=lambda ent=e: self._delete(ent)).pack(side='left', padx=2)
 
     def _edit(self, entry):
-        dlg = EditEntryDialog(self, entry, self.data['categories'])
+        dlg = EditEntryDialog(self, entry, self.data)
         if dlg.result:
             entry.update(dlg.result)
             save_data(self.data)
@@ -1367,7 +1426,10 @@ class ReportDialog(tk.Toplevel):
                 continue
             if not (fd <= s_dt.date() <= td):
                 continue
-            end_dt = datetime.fromisoformat(e['end']) if e.get('end') else None
+            try:
+                end_dt = datetime.fromisoformat(e['end']) if e.get('end') else None
+            except (ValueError, TypeError):
+                end_dt = None
             dur_sec = ((end_dt or datetime.now()) - s_dt).total_seconds()
             cat = cat_by_id.get(e['category_id'])
             rows.append((s_dt, end_dt, dur_sec, cat, e))
@@ -1424,11 +1486,18 @@ class ReportDialog(tk.Toplevel):
         if not rng:
             return
         fd, td = rng
-        html = generate_report(self.data, fd, td)
-        tmp  = tempfile.NamedTemporaryFile('w', suffix='.html', delete=False, encoding='utf-8')
-        tmp.write(html)
-        tmp.close()
-        webbrowser.open('file:///' + tmp.name.replace(os.sep, '/'))
+        html_doc = generate_report(self.data, fd, td)
+        # Fixed filename so old reports don't accumulate in %TEMP%
+        out = Path(tempfile.gettempdir()) / 'timetracker_report.html'
+        try:
+            out.write_text(html_doc, encoding='utf-8')
+        except OSError:
+            tmp = tempfile.NamedTemporaryFile('w', suffix='.html',
+                                              delete=False, encoding='utf-8')
+            tmp.write(html_doc)
+            tmp.close()
+            out = Path(tmp.name)
+        webbrowser.open(out.as_uri())
         self.destroy()
 
 # ---------------------------------------------------------------------------
@@ -1596,6 +1665,10 @@ class App(tk.Tk):
         self._after           = None
         self._cat_time_labels = {}
 
+        # Cache of today's completed-entry totals (see _today_totals)
+        self._totals_cache     = None
+        self._totals_cache_day = None
+
         # Widget / pin state
         self._mini      = False
         self._topmost   = False
@@ -1611,7 +1684,8 @@ class App(tk.Tk):
         self._idle_began_at    = None   # datetime when threshold first crossed
         self._idle_prompt_open = False
 
-        cfg = load_config()
+        # Config is kept in memory; _save_window_state writes it back on change
+        self._cfg = cfg = load_config()
         if cfg.get('topmost'):
             self._topmost = True
             self.attributes('-topmost', True)
@@ -1631,6 +1705,72 @@ class App(tk.Tk):
         # Enter mini mode after UI is fully drawn
         if cfg.get('mini'):
             self.after(100, self._toggle_mini)
+
+        # Detect an entry left running from a previous day (crash / forgot to stop)
+        self.after(300, self._check_stale_running)
+
+    def _check_stale_running(self):
+        run = running_entry(self.data)
+        if not run:
+            return
+        try:
+            s = datetime.fromisoformat(run['start'])
+        except (ValueError, TypeError):
+            return
+        if s.date() >= date.today():
+            return
+        cat = next((c for c in self.data['categories']
+                    if c['id'] == run['category_id']), None)
+        name = cat['name'] if cat else '?'
+        stop = messagebox.askyesno(
+            "Laufender Eintrag gefunden",
+            f"\"{name}\" laeuft noch seit {s.strftime('%d.%m.%Y %H:%M')} "
+            "(vor heute gestartet).\n\n"
+            "Ja  = Eintrag am Ende des Starttags stoppen (23:59:59)\n"
+            "Nein = weiterlaufen lassen",
+            parent=self,
+        )
+        if stop:
+            end = s.replace(hour=23, minute=59, second=59, microsecond=0)
+            run['end'] = end.isoformat(timespec='seconds')
+            save_data(self.data)
+            self._refresh()
+
+    def _today_totals(self):
+        """Seconds per category for today.
+
+        Totals of *completed* entries are cached (rebuilt on data change via
+        _refresh, or on day rollover); only the running entry is computed live,
+        so the per-second tick stays O(1) instead of re-parsing every entry.
+        Entries are attributed entirely to their start day (no midnight split).
+        """
+        today_str = date.today().isoformat()
+        if self._totals_cache is None or self._totals_cache_day != today_str:
+            totals = {}
+            for e in self.data['entries']:
+                if not e.get('end') or not e['start'].startswith(today_str):
+                    continue
+                try:
+                    s   = datetime.fromisoformat(e['start'])
+                    end = datetime.fromisoformat(e['end'])
+                except (ValueError, TypeError):
+                    continue
+                cid = e['category_id']
+                totals[cid] = totals.get(cid, 0) + (end - s).total_seconds()
+            self._totals_cache     = totals
+            self._totals_cache_day = today_str
+
+        totals = dict(self._totals_cache)
+        run = running_entry(self.data)
+        if run and run['start'].startswith(today_str):
+            try:
+                s   = datetime.fromisoformat(run['start'])
+                cid = run['category_id']
+                totals[cid] = totals.get(cid, 0) + max(
+                    0, (datetime.now() - s).total_seconds())
+            except (ValueError, TypeError):
+                pass
+        return totals
 
     # ------------------------------------------------------------------
     def _build_ui(self):
@@ -1731,10 +1871,12 @@ class App(tk.Tk):
         for w in self.cat_outer.winfo_children():
             w.destroy()
         self._cat_time_labels.clear()
+        # Every data mutation goes through _refresh — rebuild the totals cache
+        self._totals_cache = None
 
         run  = running_entry(self.data)
         act  = run['category_id'] if run else None
-        tots = today_totals(self.data)
+        tots = self._today_totals()
 
         self.total_lbl.config(text=f"Heute: {fmt_hms(sum(tots.values()))}")
         self._stop_btn.config(
@@ -1851,8 +1993,11 @@ class App(tk.Tk):
         run = running_entry(self.data)
 
         if run:
-            start   = datetime.fromisoformat(run['start'])
-            elapsed = (datetime.now() - start).total_seconds()
+            try:
+                start   = datetime.fromisoformat(run['start'])
+                elapsed = (datetime.now() - start).total_seconds()
+            except (ValueError, TypeError):
+                elapsed = 0
             cat     = next((c for c in self.data['categories']
                             if c['id'] == run['category_id']), None)
             self.status_lbl.config(text=f"Laeuft: {cat['name']}" if cat else "Laeuft…")
@@ -1878,7 +2023,7 @@ class App(tk.Tk):
 
         # Recalculate per-category totals only while a timer is running or just stopped
         if run or self._last_was_running:
-            tots = today_totals(self.data)
+            tots = self._today_totals()
             self.total_lbl.config(text=f"Heute: {fmt_hms(sum(tots.values()))}")
             for cid, lbl in self._cat_time_labels.items():
                 try:
@@ -1938,8 +2083,11 @@ class App(tk.Tk):
         """Show description dialog for a just-completed entry."""
         cat = next((c for c in self.data['categories']
                     if c['id'] == run['category_id']), None)
-        dur = (datetime.fromisoformat(run['end'])
-               - datetime.fromisoformat(run['start'])).total_seconds()
+        try:
+            dur = (datetime.fromisoformat(run['end'])
+                   - datetime.fromisoformat(run['start'])).total_seconds()
+        except (ValueError, TypeError):
+            dur = 0
         dlg = WorkDescriptionDialog(
             self,
             cat_name     = cat['name']  if cat else '?',
@@ -1950,28 +2098,37 @@ class App(tk.Tk):
 
     def _start(self, cat_id):
         run = running_entry(self.data)
+        if run and run['category_id'] == cat_id:
+            return
+        # One shared timestamp: the old entry ends exactly when the new one
+        # starts, so the time spent typing the description isn't lost.
+        now_iso = datetime.now().isoformat(timespec='seconds')
         if run:
-            if run['category_id'] == cat_id:
-                return
-            run['end'] = datetime.now().isoformat(timespec='seconds')
-            self._ask_description(run)
+            run['end'] = now_iso
         self.data['entries'].append({
             'id':          str(uuid.uuid4()),
             'category_id': cat_id,
-            'start':       datetime.now().isoformat(timespec='seconds'),
+            'start':       now_iso,
             'end':         None,
             'description': '',
         })
+        # Persist before the (blocking) description dialog — a crash while
+        # typing must not lose the stop/start.
         save_data(self.data)
         self._refresh()
+        if run:
+            self._ask_description(run)
+            save_data(self.data)
 
     def _stop(self):
         run = running_entry(self.data)
-        if run:
-            run['end'] = datetime.now().isoformat(timespec='seconds')
-            self._ask_description(run)
-            save_data(self.data)
-            self._refresh()
+        if not run:
+            return
+        run['end'] = datetime.now().isoformat(timespec='seconds')
+        save_data(self.data)   # persist the stop before the blocking dialog
+        self._refresh()
+        self._ask_description(run)
+        save_data(self.data)
 
     def _manage_cats(self):
         ManageCategoriesDialog(self, self.data, self._refresh)
@@ -2032,7 +2189,7 @@ class App(tk.Tk):
 
     def _change_path(self):
         """Pick a new folder for the data file and restart to apply."""
-        cfg    = load_config()
+        cfg    = self._cfg
         chosen = filedialog.askdirectory(
             title="Neuer Speicherort fuer timetracker_data.json",
             initialdir=cfg.get('data_dir', str(Path.home())),
@@ -2050,8 +2207,12 @@ class App(tk.Tk):
             return
         cfg['data_dir'] = chosen
         save_config(cfg)
-        import sys, subprocess
-        subprocess.Popen([sys.executable] + sys.argv)
+        if getattr(sys, 'frozen', False):
+            # PyInstaller: sys.executable IS the app; sys.argv[0] would be
+            # passed as a bogus file argument
+            subprocess.Popen([sys.executable] + sys.argv[1:])
+        else:
+            subprocess.Popen([sys.executable] + sys.argv)
         self.on_close()
 
     # ------------------------------------------------------------------
@@ -2222,7 +2383,7 @@ class App(tk.Tk):
 
         run  = running_entry(self.data)
         act  = run['category_id'] if run else None
-        tots = today_totals(self.data)
+        tots = self._today_totals()
 
         if not self.data['categories']:
             tk.Label(fw, text="Keine Kategorien", bg=BG, fg=FG_DIM,
@@ -2369,7 +2530,7 @@ class App(tk.Tk):
         self._save_id = self.after(400, self._save_window_state)
 
     def _save_window_state(self):
-        cfg = load_config()
+        cfg = self._cfg
         cfg['win_x']   = self.winfo_x()
         cfg['win_y']   = self.winfo_y()
         if not self._mini:
