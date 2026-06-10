@@ -105,6 +105,7 @@ single-file executable that requires no Python installation on the target machin
 - **+ Neue Kategorie** — add a category. Pick a name, an optional ServiceNow task number, and a colour swatch.
 - **↑ / ↓** — reorder categories; the order is reflected in the main window.
 - **Archiv. / Reaktiv.** — archive a category to hide it from the start list (its entries stay in reports); reactivate it any time. Archiving the currently running category stops the timer.
+- Archived categories are hidden in the manager too — **Archivierte anzeigen (n)** in the footer toggles them.
 - **Bearb.** — edit an existing category.
 - **Loeschen** — delete a category. Time entries are preserved even after deletion.
 

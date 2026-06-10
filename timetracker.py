@@ -871,6 +871,7 @@ class ManageCategoriesDialog(tk.Toplevel):
         self.minsize(420, 200)
         self.data      = data
         self.on_change = on_change
+        self._show_archived = False
         self.transient(parent)
         self.grab_set()
         self.geometry(f"520x400+{parent.winfo_rootx()+40}+{parent.winfo_rooty()+40}")
@@ -920,13 +921,20 @@ class ManageCategoriesDialog(tk.Toplevel):
         self._list_sb     = sb
         self._wheel_fn    = _wheel
 
-        if not self.data['categories']:
-            tk.Label(inner, text="Noch keine Kategorien vorhanden.",
+        n_arch  = sum(1 for c in self.data['categories'] if c.get('archived'))
+        visible = [c for c in self.data['categories']
+                   if self._show_archived or not c.get('archived')]
+
+        if not visible:
+            text = ("Noch keine Kategorien vorhanden."
+                    if not self.data['categories']
+                    else f"{n_arch} archivierte Kategorie(n) ausgeblendet.")
+            tk.Label(inner, text=text,
                      bg=BG_PANEL, fg=FG_DIM, font=('Segoe UI', 9),
                      pady=16).pack()
         else:
-            for cat in list(self.data['categories']):
-                self._cat_row(inner, cat)
+            for cat in visible:
+                self._cat_row(inner, cat, visible)
             _bind_tree(inner, '<MouseWheel>', _wheel)
 
         # Footer
@@ -934,7 +942,16 @@ class ManageCategoriesDialog(tk.Toplevel):
         ft = tk.Frame(self, bg=BG_PANEL, padx=16, pady=10)
         ft.pack(fill='x')
         flatbtn(ft, "+ Neue Kategorie", '#27ae60', self._add).pack(side='left')
+        if n_arch:
+            txt = ("Archivierte ausblenden" if self._show_archived
+                   else f"Archivierte anzeigen ({n_arch})")
+            flatbtn(ft, txt, BG_ROW, self._toggle_show_archived,
+                    fg=FG_DIM).pack(side='left', padx=(6, 0))
         flatbtn(ft, "Schliessen",       BG_ROW,    self.destroy).pack(side='right')
+
+    def _toggle_show_archived(self):
+        self._show_archived = not self._show_archived
+        self._build()
 
     @staticmethod
     def _scrollset(canvas, sb, first, last):
@@ -950,7 +967,7 @@ class ManageCategoriesDialog(tk.Toplevel):
         elif (l - f) >= 0.999 and sb.winfo_ismapped():
             sb.pack_forget()
 
-    def _cat_row(self, parent, cat):
+    def _cat_row(self, parent, cat, visible):
         archived = bool(cat.get('archived'))
         row = tk.Frame(parent, bg=BG_ROW)
         row.pack(fill='x', pady=2)
@@ -972,13 +989,13 @@ class ManageCategoriesDialog(tk.Toplevel):
             tk.Label(mid, text='(archiviert)', bg=BG_ROW, fg=FG_DIM,
                      font=('Segoe UI', 8, 'italic'), anchor='w').pack(side='left', padx=(6, 0), pady=7)
 
-        # Action buttons
-        cats = self.data['categories']
-        idx  = cats.index(cat)
+        # Action buttons — arrows move within the *visible* list so a swap
+        # with a hidden archived neighbour never looks like a no-op
+        idx  = visible.index(cat)
         btns = tk.Frame(row, bg=BG_ROW, padx=6)
         btns.pack(side='right', fill='y')
         for symbol, delta in (("↑", -1), ("↓", 1)):
-            at_edge = (idx == 0 and delta == -1) or (idx == len(cats) - 1 and delta == 1)
+            at_edge = (idx == 0 and delta == -1) or (idx == len(visible) - 1 and delta == 1)
             tk.Button(btns, text=symbol, bg=BG_PANEL, fg=FG_DIM if at_edge else FG,
                       relief='flat', font=('Segoe UI', 9), padx=5, pady=3,
                       cursor='hand2', activebackground=BG_PANEL,
@@ -1045,14 +1062,18 @@ class ManageCategoriesDialog(tk.Toplevel):
         self._build()
 
     def _move(self, cat, direction):
-        cats = self.data['categories']
-        idx  = cats.index(cat)
-        new  = idx + direction
-        if 0 <= new < len(cats):
-            cats[idx], cats[new] = cats[new], cats[idx]
-            save_data(self.data)
-            self.on_change()
-            self._build()
+        cats    = self.data['categories']
+        visible = [c for c in cats if self._show_archived or not c.get('archived')]
+        vidx    = visible.index(cat)
+        new_v   = vidx + direction
+        if not (0 <= new_v < len(visible)):
+            return
+        # Swap with the visible neighbour's position in the full list
+        i, j = cats.index(cat), cats.index(visible[new_v])
+        cats[i], cats[j] = cats[j], cats[i]
+        save_data(self.data)
+        self.on_change()
+        self._build()
 
 # ---------------------------------------------------------------------------
 # Edit Entry Dialog (single entry)
