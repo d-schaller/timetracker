@@ -107,31 +107,121 @@ def resolve_data_file():
     return Path(chosen) / "timetracker_data.json"
 
 DATA_FILE = resolve_data_file()
-COLORS = ['#3498db', '#2ecc71', '#e67e22', '#e74c3c',
-          '#9b59b6', '#1abc9c', '#f39c12', '#e91e63']
+# Default swatches for new categories (existing ones keep their stored colour)
+COLORS = ['#4da3ff', '#34d399', '#ffa94d', '#ff6b6b',
+          '#b197fc', '#22d3ee', '#fcc419', '#f783ac']
 
-BG       = '#1e2532'
-BG_PANEL = '#252d3d'
-BG_ROW   = '#2d3748'
-BG_ACT   = '#1a3a5c'
-BG_SEP   = '#0d1117'   # very-dark separator line
-FG       = '#e2e8f0'
-FG_DIM   = '#718096'
-ACCENT   = '#3498db'
-GREEN    = '#2ecc71'
-RED      = '#e74c3c'
+BG       = '#151a23'
+BG_PANEL = '#1b2230'
+BG_ROW   = '#232c3d'
+BG_HOVER = '#2b374c'   # hover state for rows/cards
+BG_ACT   = '#173a5e'
+BG_ACT_HOVER = '#1d4570'
+BG_SEP   = '#0a0e15'   # very-dark separator line
+FG       = '#e6ebf2'
+FG_DIM   = '#7d8aa0'
+FG_MUTED = '#aab8cc'   # inactive category names
+ACCENT   = '#4da3ff'
+GREEN    = '#34d399'
+RED      = '#f0655a'
+BTN_GREEN  = '#21a366'
+BTN_PURPLE = '#8a63c9'
 
 # Reusable button style helpers
-BTN_NEUTRAL  = {'bg': '#3d5166', 'fg': '#c8d6e5', 'activebackground': '#4a6070', 'activeforeground': '#ffffff'}
-BTN_ACCENT   = {'bg': ACCENT,    'fg': '#ffffff',  'activebackground': '#2980b9', 'activeforeground': '#ffffff'}
-BTN_ACTIVE   = {'bg': '#1a6a9e', 'fg': '#ffffff',  'activebackground': '#1a6a9e', 'activeforeground': '#ffffff'}
-BTN_DANGER   = {'bg': RED,       'fg': '#ffffff',  'activebackground': '#c0392b', 'activeforeground': '#ffffff'}
+BTN_NEUTRAL  = {'bg': '#33415a', 'fg': '#cdd9e8', 'activebackground': '#3e4f6d', 'activeforeground': '#ffffff'}
+BTN_ACCENT   = {'bg': ACCENT,    'fg': '#ffffff', 'activebackground': '#2f7fd6', 'activeforeground': '#ffffff'}
+BTN_ACTIVE   = {'bg': '#1d5c96', 'fg': '#ffffff', 'activebackground': '#1d5c96', 'activeforeground': '#ffffff'}
+BTN_DANGER   = {'bg': RED,       'fg': '#ffffff', 'activebackground': '#d64a40', 'activeforeground': '#ffffff'}
+
+def _lighten(color, factor=1.18):
+    """Slightly brighter shade of a #rrggbb colour — used for hover states."""
+    color = color.lstrip('#')
+    r, g, b = (int(color[i:i + 2], 16) for i in (0, 2, 4))
+    return '#%02x%02x%02x' % tuple(min(255, int(c * factor) + 10) for c in (r, g, b))
+
+def apply_dark_title_bar(window):
+    """Dark window title bar on Windows 10/11 (no-op elsewhere)."""
+    if sys.platform != 'win32':
+        return
+    try:
+        import ctypes
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        if not hwnd:
+            return
+        value = ctypes.c_int(1)
+        for attr in (20, 19):   # DWMWA_USE_IMMERSIVE_DARK_MODE (19 on older builds)
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)) == 0:
+                break
+    except Exception:
+        pass
 
 def flatbtn(parent, text, bg, cmd, *, fg=FG, padx=12, pady=6):
     """Flat-style button used throughout all dialogs."""
     return tk.Button(parent, text=text, bg=bg, fg=fg, relief='flat',
                      font=('Segoe UI', 9), padx=padx, pady=pady,
-                     cursor='hand2', activebackground=bg, command=cmd)
+                     cursor='hand2', activebackground=_lighten(bg),
+                     activeforeground=fg, command=cmd)
+
+class Tooltip:
+    """Minimal hover tooltip — used for icon-only buttons."""
+    def __init__(self, widget, text, delay=500):
+        self.widget = widget
+        self.text   = text
+        self.delay  = delay
+        self._id    = None
+        self._tip   = None
+        widget.bind('<Enter>',    self._schedule, add='+')
+        widget.bind('<Leave>',    self._hide,     add='+')
+        widget.bind('<Button-1>', self._hide,     add='+')
+
+    def _schedule(self, _e=None):
+        self._cancel()
+        self._id = self.widget.after(self.delay, self._show)
+
+    def _cancel(self):
+        if self._id:
+            self.widget.after_cancel(self._id)
+            self._id = None
+
+    def _show(self):
+        if self._tip or not self.widget.winfo_exists():
+            return
+        x = self.widget.winfo_rootx() + self.widget.winfo_width() // 2
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        tip = tk.Toplevel(self.widget)
+        tip.overrideredirect(True)
+        tip.attributes('-topmost', True)
+        tk.Label(tip, text=self.text, bg=BG_SEP, fg=FG,
+                 font=('Segoe UI', 8), padx=8, pady=3).pack()
+        tip.geometry(f'+{x}+{y}')
+        self._tip = tip
+
+    def _hide(self, _e=None):
+        self._cancel()
+        if self._tip:
+            try:
+                self._tip.destroy()
+            except tk.TclError:
+                pass
+            self._tip = None
+
+def iconbtn(parent, icon, tooltip, bg, cmd, *, fg=FG):
+    """Small icon-only action button with a hover tooltip."""
+    b = tk.Button(parent, text=icon, bg=bg, fg=fg, relief='flat',
+                  font=('Segoe UI', 9), padx=7, pady=3,
+                  cursor='hand2', activebackground=_lighten(bg),
+                  activeforeground=fg, command=cmd)
+    b._keep_bg = True   # protect from _set_bg_tree on row hover
+    Tooltip(b, tooltip)
+    return b
+
+def swatch(parent, color, **kw):
+    """Category colour bar — keeps its colour when the row hover repaints."""
+    f = tk.Frame(parent, bg=color, **kw)
+    f._keep_bg = True
+    return f
 
 # ---------------------------------------------------------------------------
 # Data helpers
@@ -286,7 +376,10 @@ def _bind_tree(widget, event, handler):
         _bind_tree(child, event, handler)
 
 def _set_bg_tree(widget, color):
-    """Set background colour on a widget and all its descendants."""
+    """Set background colour on a widget and all its descendants,
+    skipping widgets marked with _keep_bg (colour swatches, icon buttons)."""
+    if getattr(widget, '_keep_bg', False):
+        return
     try:
         widget.config(bg=color)
     except tk.TclError:
@@ -795,6 +888,7 @@ class CategoryDialog(tk.Toplevel):
         self.result = None
         self.transient(parent)
         self.grab_set()
+        apply_dark_title_bar(self)
         self.geometry(f"+{parent.winfo_rootx()+60}+{parent.winfo_rooty()+60}")
 
         pad = tk.Frame(self, bg=BG_PANEL, padx=22, pady=18)
@@ -874,6 +968,7 @@ class ManageCategoriesDialog(tk.Toplevel):
         self._show_archived = False
         self.transient(parent)
         self.grab_set()
+        apply_dark_title_bar(self)
         self.geometry(f"520x400+{parent.winfo_rootx()+40}+{parent.winfo_rooty()+40}")
 
         self._build()
@@ -941,7 +1036,7 @@ class ManageCategoriesDialog(tk.Toplevel):
         tk.Frame(self, bg=BG_SEP, height=1).pack(fill='x')
         ft = tk.Frame(self, bg=BG_PANEL, padx=16, pady=10)
         ft.pack(fill='x')
-        flatbtn(ft, "+ Neue Kategorie", '#27ae60', self._add).pack(side='left')
+        flatbtn(ft, "+ Neue Kategorie", BTN_GREEN, self._add).pack(side='left')
         if n_arch:
             txt = ("Archivierte ausblenden" if self._show_archived
                    else f"Archivierte anzeigen ({n_arch})")
@@ -973,7 +1068,7 @@ class ManageCategoriesDialog(tk.Toplevel):
         row.pack(fill='x', pady=2)
 
         # Colour swatch
-        tk.Frame(row, bg=cat['color'], width=5).pack(side='left', fill='y')
+        swatch(row, cat['color'], width=5).pack(side='left', fill='y')
 
         # Name + task number on one line
         mid = tk.Frame(row, bg=BG_ROW, padx=10)
@@ -1002,19 +1097,14 @@ class ManageCategoriesDialog(tk.Toplevel):
                       state='disabled' if at_edge else 'normal',
                       command=lambda c=cat, d=delta: self._move(c, d),
                       ).pack(side='left', padx=1, pady=6)
-        tk.Button(btns, text="Reaktiv." if archived else "Archiv.",
-                  bg='#3d5166', fg=FG, relief='flat',
-                  font=('Segoe UI', 8), padx=8, pady=3, cursor='hand2',
-                  activebackground='#3d5166',
-                  command=lambda c=cat: self._toggle_archive(c)).pack(side='left', padx=(4, 2), pady=6)
-        tk.Button(btns, text="Bearb.", bg=ACCENT, fg=FG, relief='flat',
-                  font=('Segoe UI', 8), padx=8, pady=3, cursor='hand2',
-                  activebackground=ACCENT,
-                  command=lambda c=cat: self._edit(c)).pack(side='left', padx=2, pady=6)
-        tk.Button(btns, text="Loeschen", bg=RED, fg=FG, relief='flat',
-                  font=('Segoe UI', 8), padx=8, pady=3, cursor='hand2',
-                  activebackground=RED,
-                  command=lambda c=cat: self._delete(c)).pack(side='left', padx=2, pady=6)
+        iconbtn(btns, "♻" if archived else "🗃",
+                "Reaktivieren" if archived else "Archivieren",
+                BTN_NEUTRAL['bg'], lambda c=cat: self._toggle_archive(c)
+                ).pack(side='left', padx=(4, 2), pady=6)
+        iconbtn(btns, "✏", "Bearbeiten",
+                ACCENT, lambda c=cat: self._edit(c)).pack(side='left', padx=2, pady=6)
+        iconbtn(btns, "🗑", "Loeschen",
+                RED, lambda c=cat: self._delete(c)).pack(side='left', padx=2, pady=6)
 
     def _toggle_archive(self, cat):
         if cat.get('archived'):
@@ -1090,6 +1180,7 @@ class EditEntryDialog(tk.Toplevel):
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        apply_dark_title_bar(self)
         self.geometry(f"+{parent.winfo_rootx()+50}+{parent.winfo_rooty()+50}")
         self.entry      = entry
         self.data       = data
@@ -1207,6 +1298,7 @@ class ManageEntriesDialog(tk.Toplevel):
         self.on_change = on_change
         self.transient(parent)
         self.grab_set()
+        apply_dark_title_bar(self)
         self.geometry(f"760x500+{parent.winfo_rootx()+30}+{parent.winfo_rooty()+30}")
 
         top = tk.Frame(self, bg=BG_PANEL, padx=14, pady=10)
@@ -1272,7 +1364,7 @@ class ManageEntriesDialog(tk.Toplevel):
         tk.Button(ft, text="Schliessen", relief='flat',
                   font=('Segoe UI', 9), padx=14, pady=6, cursor='hand2',
                   command=self.destroy, **BTN_NEUTRAL).pack(side='right')
-        flatbtn(ft, "+ Nachtragen", '#27ae60', self._add,
+        flatbtn(ft, "+ Nachtragen", BTN_GREEN, self._add,
                 pady=6).pack(side='right', padx=(0, 6))
 
         self._refresh()
@@ -1345,7 +1437,7 @@ class ManageEntriesDialog(tk.Toplevel):
         row.pack(fill='x', pady=1, padx=2)
 
         color = cat['color'] if cat else FG_DIM
-        tk.Frame(row, bg=color, width=4).pack(side='left', fill='y')
+        swatch(row, color, width=4).pack(side='left', fill='y')
 
         def cell(text, w, anchor='w'):
             tk.Label(row, text=text, bg=bg, fg=FG,
@@ -1367,14 +1459,10 @@ class ManageEntriesDialog(tk.Toplevel):
 
         btns = tk.Frame(row, bg=bg)
         btns.pack(side='right', padx=4)
-        tk.Button(btns, text="Bearb.", bg=ACCENT, fg=FG, relief='flat',
-                  font=('Segoe UI', 8), padx=6, pady=3, cursor='hand2',
-                  activebackground=ACCENT,
-                  command=lambda ent=e: self._edit(ent)).pack(side='left', padx=2)
-        tk.Button(btns, text="Loeschen", bg=RED, fg=FG, relief='flat',
-                  font=('Segoe UI', 8), padx=6, pady=3, cursor='hand2',
-                  activebackground=RED,
-                  command=lambda ent=e: self._delete(ent)).pack(side='left', padx=2)
+        iconbtn(btns, "✏", "Bearbeiten",
+                ACCENT, lambda ent=e: self._edit(ent)).pack(side='left', padx=2)
+        iconbtn(btns, "🗑", "Loeschen",
+                RED, lambda ent=e: self._delete(ent)).pack(side='left', padx=2)
 
     def _add(self):
         """Manually add a past entry ("nachtragen")."""
@@ -1434,6 +1522,7 @@ class ReportDialog(tk.Toplevel):
         self.data = data
         self.transient(parent)
         self.grab_set()
+        apply_dark_title_bar(self)
         self.geometry(f"+{parent.winfo_rootx()+60}+{parent.winfo_rooty()+60}")
 
         today = date.today()
@@ -1605,6 +1694,7 @@ class WorkDescriptionDialog(tk.Toplevel):
         self.result = None          # None = skipped, str = description
         self.transient(parent)
         self.grab_set()
+        apply_dark_title_bar(self)
         self.geometry(f"+{parent.winfo_rootx()+60}+{parent.winfo_rooty()+80}")
 
         outer = tk.Frame(self, bg=BG_PANEL, padx=22, pady=18)
@@ -1613,7 +1703,7 @@ class WorkDescriptionDialog(tk.Toplevel):
         # Category + duration context
         ctx = tk.Frame(outer, bg=BG_ROW, padx=12, pady=8)
         ctx.pack(fill='x', pady=(0, 14))
-        tk.Frame(ctx, bg=cat_color, width=4).pack(side='left', fill='y')
+        swatch(ctx, cat_color, width=4).pack(side='left', fill='y')
         info = tk.Frame(ctx, bg=BG_ROW, padx=10)
         info.pack(side='left')
         tk.Label(info, text=cat_name, bg=BG_ROW, fg=FG,
@@ -1669,6 +1759,7 @@ class InfoDialog(tk.Toplevel):
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        apply_dark_title_bar(self)
         self.geometry(f"+{parent.winfo_rootx()+40}+{parent.winfo_rooty()+40}")
 
         outer = tk.Frame(self, bg=BG_PANEL, padx=24, pady=20)
@@ -1750,6 +1841,7 @@ class App(tk.Tk):
             self.iconbitmap(resource_path('stopwatch.ico'))
         except tk.TclError:
             pass  # icon file missing — use default
+        apply_dark_title_bar(self)
         self.resizable(True, True)
         self.minsize(380, 260)
 
@@ -1949,7 +2041,7 @@ class App(tk.Tk):
                                         command=self._cat_canvas.yview)
         self._cat_canvas.configure(yscrollcommand=self._on_cat_scrollset)
 
-        self.cat_outer = tk.Frame(self._cat_canvas, bg=BG_PANEL, padx=6, pady=6)
+        self.cat_outer = tk.Frame(self._cat_canvas, bg=BG_PANEL, padx=8, pady=8)
         self._cat_window = self._cat_canvas.create_window(
             (0, 0), window=self.cat_outer, anchor='nw')
 
@@ -1976,8 +2068,8 @@ class App(tk.Tk):
 
         self._stop_btn = bot_btn("Stop", RED, self._stop)
         self._stop_btn.pack(side='left', padx=3)
-        bot_btn("Kategorien",  '#27ae60',  self._manage_cats).pack(side='left', padx=3)
-        bot_btn("Eintraege",   '#8e44ad',  self._manage_entries).pack(side='left', padx=3)
+        bot_btn("Kategorien",  BTN_GREEN,  self._manage_cats).pack(side='left', padx=3)
+        bot_btn("Eintraege",   BTN_PURPLE,  self._manage_entries).pack(side='left', padx=3)
         bot_btn("?",           BG_ROW,     self._show_info).pack(side='left', padx=3)
         bot_btn("Report",      ACCENT,     self._report).pack(side='right', padx=3)
         self._storage_btn = bot_btn("📁  Daten", BG_ROW, self._show_storage_menu)
@@ -2021,7 +2113,7 @@ class App(tk.Tk):
         self._update_today_display(tots)
         self._stop_btn.config(
             state='normal' if run else 'disabled',
-            fg=FG if run else '#6b3535',
+            fg=FG if run else '#7a4a44',
         )
 
         cats = active_categories(self.data)
@@ -2047,23 +2139,23 @@ class App(tk.Tk):
             bg = BG_ACT if is_active else BG_ROW
 
             row = tk.Frame(self.cat_outer, bg=bg, cursor='hand2')
-            row.pack(fill='x', pady=2)
+            row.pack(fill='x', pady=3)
 
-            tk.Frame(row, bg=cat['color'], width=5).pack(side='left', fill='y')
+            swatch(row, cat['color'], width=5).pack(side='left', fill='y')
 
             mid = tk.Frame(row, bg=bg, padx=12, pady=9)
             mid.pack(side='left', fill='both', expand=True)
 
             tk.Label(mid, text=cat['name'],
                      font=('Segoe UI', 11, 'bold' if is_active else 'normal'),
-                     bg=bg, fg=FG if is_active else '#a0aec0',
+                     bg=bg, fg=FG if is_active else FG_MUTED,
                      anchor='w').pack(anchor='w')
 
             task = cat.get('task_number')
             if task:
                 tk.Label(mid, text=task,
                          font=('Segoe UI', 8), bg=bg,
-                         fg='#4a90d9' if is_active else FG_DIM,
+                         fg=ACCENT if is_active else FG_DIM,
                          anchor='w').pack(anchor='w')
 
             right = tk.Frame(row, bg=bg, padx=12)
@@ -2079,8 +2171,8 @@ class App(tk.Tk):
             tk.Label(right, text=indicator, font=('Segoe UI', 7),
                      bg=bg, fg=GREEN).pack(anchor='e')
 
-            for w in (row, mid, right):
-                w.bind('<Button-1>', lambda _, cid=cat['id']: self._start(cid))
+            self._bind_row_interaction(row, cat['id'], bg,
+                                       BG_ACT_HOVER if is_active else BG_HOVER)
 
     def _render_grid(self, act, tots, cats):
         outer = self.cat_outer
@@ -2096,7 +2188,7 @@ class App(tk.Tk):
             card.grid(row=grid_row, column=col, padx=4, pady=4, sticky='nsew')
 
             # Top colour bar
-            tk.Frame(card, bg=cat['color'], height=4).pack(fill='x')
+            swatch(card, cat['color'], height=4).pack(fill='x')
 
             # Body
             body = tk.Frame(card, bg=bg, padx=10, pady=8)
@@ -2104,14 +2196,14 @@ class App(tk.Tk):
 
             tk.Label(body, text=cat['name'],
                      font=('Segoe UI', 10, 'bold' if is_active else 'normal'),
-                     bg=bg, fg=FG if is_active else '#a0aec0',
+                     bg=bg, fg=FG if is_active else FG_MUTED,
                      anchor='w').pack(anchor='w', fill='x')
 
             task = cat.get('task_number')
             if task:
                 tk.Label(body, text=task,
                          font=('Segoe UI', 8), bg=bg,
-                         fg='#4a90d9' if is_active else FG_DIM,
+                         fg=ACCENT if is_active else FG_DIM,
                          anchor='w').pack(anchor='w')
 
             # Bottom row: active dot + time
@@ -2128,8 +2220,28 @@ class App(tk.Tk):
             time_lbl.pack(side='right')
             self._cat_time_labels[cat['id']] = time_lbl
 
-            for w in (card, body, bot):
-                w.bind('<Button-1>', lambda _, cid=cat['id']: self._start(cid))
+            self._bind_row_interaction(card, cat['id'], bg,
+                                       BG_ACT_HOVER if is_active else BG_HOVER)
+
+    def _bind_row_interaction(self, row, cat_id, bg, bg_hover):
+        """Click-to-start plus hover highlight on a category row/card,
+        bound to the row and all its children (labels included)."""
+        def _on_click(_e, cid=cat_id):
+            self._start(cid)
+
+        def _hover_on(_e):
+            _set_bg_tree(row, bg_hover)
+
+        def _hover_off(e):
+            x, y   = e.x_root, e.y_root
+            rx, ry = row.winfo_rootx(), row.winfo_rooty()
+            if not (rx <= x < rx + row.winfo_width() and
+                    ry <= y < ry + row.winfo_height()):
+                _set_bg_tree(row, bg)
+
+        _bind_tree(row, '<Button-1>', _on_click)
+        _bind_tree(row, '<Enter>',    _hover_on)
+        _bind_tree(row, '<Leave>',    _hover_off)
 
     # ------------------------------------------------------------------
     def _tick(self):
@@ -2583,16 +2695,16 @@ class App(tk.Tk):
             for cat in fly_cats:
                 is_active = cat['id'] == act
                 bg        = BG_ACT if is_active else BG_ROW
-                bg_hover  = '#243a4e' if is_active else '#3a4a5c'
+                bg_hover  = BG_ACT_HOVER if is_active else BG_HOVER
 
                 row = tk.Frame(cat_inner, bg=bg, cursor='hand2')
                 row.pack(fill='x', padx=4, pady=1)
-                tk.Frame(row, bg=cat['color'], width=4).pack(side='left', fill='y')
+                swatch(row, cat['color'], width=4).pack(side='left', fill='y')
 
                 mid = tk.Frame(row, bg=bg, padx=10, pady=7)
                 mid.pack(side='left', fill='both', expand=True)
                 tk.Label(mid, text=cat['name'], bg=bg,
-                         fg=FG if is_active else '#a0aec0',
+                         fg=FG if is_active else FG_MUTED,
                          font=('Segoe UI', 9, 'bold' if is_active else 'normal')
                          ).pack(anchor='w')
 
@@ -2656,7 +2768,7 @@ class App(tk.Tk):
                 _set_bg_tree(stop, BG_ROW)
 
         _bind_tree(stop, '<Button-1>', lambda _: [self._do_hide_flyout(), self._stop()])
-        _bind_tree(stop, '<Enter>',    lambda _: _set_bg_tree(stop, '#3a2020'))
+        _bind_tree(stop, '<Enter>',    lambda _: _set_bg_tree(stop, '#42221d'))
         _bind_tree(stop, '<Leave>',    _stop_hover_off)
 
         # Position: above the arrow button (fall back to below if no room)
